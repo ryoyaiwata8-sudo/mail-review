@@ -1,0 +1,22 @@
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.env
+venv/
+.venv/
+
+# Data (Don't commit customer data!)
+data/
+
+# Reports
+weekly_report.md
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
