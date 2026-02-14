@@ -1,0 +1,14 @@
+.env
+data/
+__pycache__/
+*.pyc
+.vscode/
+
+# Excel and CSV files containing sensitive or large data
+CHECK_LOG_CALL.csv
+CHECK_LOG_EMAIL.csv
+weekly_check_sheet.xlsx
+dashboard_data.json
+
+# Temporary files
+~$*

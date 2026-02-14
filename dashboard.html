@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI QA Expert Dashboard | TSJ Professional</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@300;400;700&family=Inter:wght@400;700;900&display=swap"
+        rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', 'Noto Sans JP', sans-serif;
+        }
+
+        .glass {
+            background: rgba(255, 255, 255, 0.8);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+
+        .rank-double-circle {
+            color: #f59e0b;
+            font-weight: 900;
+        }
+
+        /* ◎ Gold */
+        .rank-circle {
+            color: #10b981;
+            font-weight: 900;
+        }
+
+        /* ○ Green */
+        .rank-triangle {
+            color: #ef4444;
+            font-weight: 900;
+        }
+
+        /* △ Red */
+        .gradient-bg {
+            background: radial-gradient(circle at top left, #f8fafc 0%, #cbd5e1 100%);
+        }
+
+        .category-header {
+            background: linear-gradient(90deg, #1e293b 0%, #334155 100%);
+        }
+    </style>
+</head>
+
+<body class="gradient-bg min-h-screen p-4 lg:p-8 text-slate-800">
+
+    <div x-data="dashboard()" x-init="init()" class="max-w-7xl mx-auto">
+
+        <!-- Header -->
+        <header class="flex justify-between items-end mb-8 border-b-2 border-slate-300 pb-4">
+            <div>
+                <h1 class="text-4xl font-black tracking-tighter text-slate-900 uppercase">AI QA Expert Monitor</h1>
+                <p class="text-slate-600 font-medium">30秒で把握するプロフェッショナル評価レポート</p>
+            </div>
+            <div class="text-right">
+                <div
+                    class="inline-flex items-center space-x-2 px-4 py-1 bg-slate-900 text-white rounded-full text-xs font-bold shadow-lg">
+                    <span class="relative flex h-2 w-2">
+                        <span
+                            class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                        <span class="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                    </span>
+                    <span>LIVE MONITORING</span>
+                </div>
+            </div>
+        </header>
+
+        <main class="space-y-12">
+            <template x-if="results.length === 0">
+                <div class="glass rounded-3xl p-32 text-center shadow-2xl">
+                    <div class="animate-pulse flex flex-col items-center">
+                        <div class="h-12 w-12 bg-slate-200 rounded-full mb-4"></div>
+                        <p class="text-slate-400 text-xl font-bold tracking-tight">WAITING FOR NEW INTERACTION...</p>
+                    </div>
+                </div>
+            </template>
+
+            <template x-for="(res, index) in results" :key="res.timestamp">
+                <div x-transition:enter="transition ease-out duration-700" x-transition:enter-start="opacity-0 scale-95"
+                    x-transition:enter-end="opacity-100 scale-100"
+                    class="bg-white rounded-3xl shadow-2xl overflow-hidden border border-slate-200">
+                    <!-- Meta Info Bar -->
+                    <div class="bg-slate-50 px-8 py-4 flex justify-between items-center border-b border-slate-100">
+                        <div class="flex items-center space-x-6">
+                            <div class="flex items-center space-x-3">
+                                <span class="text-xs font-black text-slate-400 uppercase">Agent</span>
+                                <span class="text-xl font-black text-slate-900" x-text="res.agent"></span>
+                            </div>
+                            <div class="h-4 w-px bg-slate-300"></div>
+                            <div class="flex items-center space-x-3">
+                                <span class="text-xs font-black text-slate-400 uppercase">Time</span>
+                                <span class="text-sm font-bold text-slate-600" x-text="res.timestamp"></span>
+                            </div>
+                        </div>
+                        <div class="text-xs font-bold text-slate-400" x-text="res.case_id"></div>
+                    </div>
+
+                    <div class="p-8 grid grid-cols-1 lg:grid-cols-12 gap-10">
+
+                        <!-- LEFT: Scorecard Table (LG: 7 columns) -->
+                        <div class="lg:col-span-8">
+                            <h3
+                                class="flex items-center text-sm font-black text-slate-900 uppercase tracking-widest mb-6">
+                                <span class="w-8 h-1 bg-slate-900 mr-3"></span>
+                                項目別スコアカード
+                            </h3>
+
+                            <div class="overflow-hidden rounded-2xl border border-slate-200 shadow-sm">
+                                <table class="w-full text-left border-collapse">
+                                    <thead class="category-header text-white text-[10px] uppercase tracking-widest">
+                                        <tr>
+                                            <th class="px-6 py-3 w-32">カテゴリ</th>
+                                            <th class="px-6 py-3 w-32">項目</th>
+                                            <th class="px-6 py-3 w-20 text-center">評価</th>
+                                            <th class="px-6 py-3">AIコメント</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="text-sm">
+                                        <template x-for="(items, catName) in res.evaluation.scorecard" :key="catName">
+                                            <template x-for="(data, itemName, idx) in items" :key="itemName">
+                                                <tr
+                                                    class="border-b border-slate-50 hover:bg-slate-50 transition-colors">
+                                                    <!-- Category Name (Show only once per block) -->
+                                                    <td x-show="idx === 0" :rowspan="Object.keys(items).length"
+                                                        class="px-6 py-4 font-black text-slate-900 bg-slate-50/50 align-top border-r border-slate-100"
+                                                        x-text="catName"></td>
+                                                    <td class="px-6 py-4 font-bold text-slate-700" x-text="itemName">
+                                                    </td>
+                                                    <td class="px-6 py-4 text-center text-xl"
+                                                        :class="getRankColor(data.rank)" x-text="data.rank"></td>
+                                                    <td class="px-6 py-4 text-slate-600 leading-relaxed"
+                                                        x-text="data.comment"></td>
+                                                </tr>
+                                            </template>
+                                        </template>
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <!-- Overall Summary -->
+                            <div
+                                class="mt-8 p-6 bg-slate-900 rounded-2xl text-white shadow-xl relative overflow-hidden">
+                                <div class="absolute top-0 right-0 p-4 opacity-10">
+                                    <svg class="w-16 h-16" fill="currentColor" viewBox="0 0 20 20">
+                                        <path
+                                            d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z">
+                                        </path>
+                                    </svg>
+                                </div>
+                                <h4 class="text-[10px] font-black text-indigo-400 uppercase tracking-[0.2em] mb-3">
+                                    Overall Summary</h4>
+                                <p class="text-md leading-relaxed whitespace-pre-line font-medium"
+                                    x-text="res.evaluation.overall_comment"></p>
+                            </div>
+                        </div>
+
+                        <!-- RIGHT: Highlights & Draft (LG: 4 columns) -->
+                        <div class="lg:col-span-4 space-y-8">
+
+                            <!-- Good Points -->
+                            <div class="glass p-6 rounded-2xl border-l-[6px] border-green-500 shadow-sm">
+                                <h4
+                                    class="text-xs font-black text-green-600 uppercase tracking-widest mb-4 flex items-center">
+                                    <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3"
+                                            d="M5 13l4 4L19 7"></path>
+                                    </svg>
+                                    Good Points
+                                </h4>
+                                <ul class="space-y-3">
+                                    <template x-for="gp in res.evaluation.good_points">
+                                        <li class="text-sm font-bold text-slate-700 flex items-start">
+                                            <span class="mr-2 text-green-400">•</span>
+                                            <span x-text="gp"></span>
+                                        </li>
+                                    </template>
+                                </ul>
+                            </div>
+
+                            <!-- Improvements -->
+                            <div class="glass p-6 rounded-2xl border-l-[6px] border-orange-500 shadow-sm">
+                                <h4
+                                    class="text-xs font-black text-orange-600 uppercase tracking-widest mb-4 flex items-center">
+                                    <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3"
+                                            d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z">
+                                        </path>
+                                    </svg>
+                                    Improvements
+                                </h4>
+                                <ul class="space-y-3">
+                                    <template x-for="imp in res.evaluation.improvements">
+                                        <li class="text-sm font-bold text-slate-700 flex items-start">
+                                            <span class="mr-2 text-orange-400">•</span>
+                                            <span x-text="imp"></span>
+                                        </li>
+                                    </template>
+                                </ul>
+                            </div>
+
+                            <!-- Draft Popup -->
+                            <div x-data="{ open: false }" class="relative">
+                                <button @click="open = !open"
+                                    class="w-full bg-slate-900 text-white py-4 rounded-xl font-black text-xs tracking-widest hover:bg-slate-800 transition-all shadow-lg flex justify-center items-center">
+                                    <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 012-2V7a2 2 0 01-2-2H5a2 2 0 01-2 2v10a2 2 0 012 2z">
+                                        </path>
+                                    </svg>
+                                    VIEW REPLY DRAFT
+                                </button>
+                                <div x-show="open" @click.away="open = false" x-transition
+                                    class="absolute top-0 right-0 w-[400px] glass p-6 rounded-2xl shadow-2xl z-50 mt-16 border-t-[8px] border-indigo-500">
+                                    <h5 class="text-xs font-black text-indigo-600 mb-4 tracking-widest">NEXT STEP DRAFT
+                                    </h5>
+                                    <div class="max-h-[400px] overflow-y-auto text-xs leading-relaxed text-slate-600 bg-white p-4 rounded-lg border border-slate-100 whitespace-pre-wrap"
+                                        x-text="res.evaluation.next_step_draft"></div>
+                                </div>
+                            </div>
+
+                        </div>
+                    </div>
+                </div>
+            </template>
+        </main>
+    </div>
+
+    <script>
+        function dashboard() {
+            return {
+                results: [],
+                init() {
+                    this.fetchData();
+                    setInterval(() => this.fetchData(), 5000);
+                },
+                fetchData() {
+                    fetch('dashboard_data.json?t=' + Date.now())
+                        .then(res => res.json())
+                        .then(data => {
+                            this.results = data;
+                        });
+                },
+                getRankColor(rank) {
+                    if (rank === '◎') return 'rank-double-circle';
+                    if (rank === '○') return 'rank-circle';
+                    if (rank === '△') return 'rank-triangle';
+                    return '';
+                }
+            }
+        }
+    </script>
+</body>
+
+</html>
