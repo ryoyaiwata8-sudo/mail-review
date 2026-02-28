@@ -4,26 +4,21 @@ import os
 from typing import List, Dict, Optional
 from datetime import datetime
 
-# Columns for CHECK_LOG (Phase 5)
+# Columns for CHECK_LOG
 CSV_COLUMNS = [
     "case_id",
+    "booking_id",
     "agent",
     "interaction_date",
-    "channel",
-    "audio_url",
-    "transcript_url",
-    "mail_url",
+    "tour_code",
+    "hold_ratio",
+    "interaction_url",
     "category",
     "check_item",
     "rating_symbol",
     "rating_num",
-    "comment_good",
-    "comment_improve",
-    "evidence_quote",
-    "evidence_timecode",
-    "risk_flag",
-    "next_step_draft",
-    "hold_total_sec",
+    "comment",
+    "evidence"
 ]
 
 # Symbol to Score Mapping
@@ -43,118 +38,106 @@ def _extract_date_str(case_id: str) -> str:
 def result_to_check_rows(result: Dict) -> List[Dict]:
     """
     Expands an evaluation result into multiple rows for the check sheet.
+    Updated for Phase 9 (Full Timestamp, Separate Links).
     """
     rows = []
     case_id = result.get("case_id", "")
     agent = result.get("agent", "")
     channel = result.get("channel", "EMAIL")
     eval_data = result.get("evaluation", {})
-    date_str = _extract_date_str(case_id)
-    hold_total_sec = result.get("hold_total_sec", 0)
     
-    # URLs
-    audio_url = f"https://s3.travelstandard.jp/audio/{case_id}.mp3" if channel == "CALL" else ""
-    mail_url = f"https://crm.travelstandard.jp/mail/{case_id}" if channel == "EMAIL" else ""
+    # Booking ID
+    booking_id = eval_data.get("booking_id", "")
+    
+    # Use AI-extracted datetime if available, otherwise fallback to date from case_id
+    interaction_dt = eval_data.get("interaction_datetime", "")
+    if not interaction_dt or "Y" in interaction_dt:
+        interaction_dt = _extract_date_str(case_id)
+    
+    # Format Tour Code to preserve leading zeros in Excel: ="02841"
+    raw_tour_code = eval_data.get("tour_code", "")
+    tour_code = f'="{raw_tour_code}"' if raw_tour_code and raw_tour_code.isdigit() else raw_tour_code
+    
+    # Hold Ratio calculation (Only for CALL)
+    if channel == "CALL":
+        hold_sec = result.get("hold_total_sec", 0)
+        total_sec = result.get("total_duration_sec", 0)
+        hold_ratio_str = f"{(hold_sec / total_sec * 100):.1f}%" if total_sec > 0 else "0.0%"
+    else:
+        hold_ratio_str = ""
+    
+    # Interaction URL
+    if channel == "CALL":
+        interaction_url = f"https://s3.travelstandard.jp/audio/{case_id}.mp3"
+    else:
+        interaction_url = f"https://s3.travelstandard.jp/email/view/{case_id}.html"
 
     scorecard = eval_data.get("scorecard", {})
     overall_comment = eval_data.get("overall_comment", "")
-    good_points = eval_data.get("good_points", [])
-    improvements = eval_data.get("improvements", [])
-    draft = eval_data.get("next_step_draft", "")
+    good_points = eval_data.get("良かった点", [])
+    improvements = eval_data.get("改善点", [])
 
-    # 1. Expand Scorecard items
+    items_to_process = []
+    
+    # 1. Flatten Scorecard items
     for category_name, items in scorecard.items():
-        if not isinstance(items, dict):
-            continue
+        if not isinstance(items, dict): continue
         for item_name, data in items.items():
-            rank = data.get("rank", "△")
-            comment = data.get("comment", "")
-            
-            rows.append({
-                "case_id": case_id,
-                "agent": agent,
-                "interaction_date": date_str,
-                "channel": channel,
-                "audio_url": audio_url,
-                "transcript_url": "",
-                "mail_url": mail_url,
+            items_to_process.append({
                 "category": category_name,
-                "check_item": item_name,
-                "rating_symbol": rank,
-                "rating_num": str(SYMBOL_TO_SCORE.get(rank, 0)),
-                "comment_good": comment,
-                "comment_improve": "",
-                "evidence_quote": "",
-                "evidence_timecode": "",
-                "risk_flag": "",
-                "next_step_draft": "",
-                "hold_total_sec": hold_total_sec,
+                "item": item_name,
+                "rank": data.get("rank", "NA"),
+                "comment": data.get("comment", ""),
+                "evidence": data.get("evidence", "")
             })
 
     # 2. Add Good Points
-    for i, gp in enumerate(good_points[:5]):
-        rows.append({
-            "case_id": case_id,
-            "agent": agent,
-            "interaction_date": date_str,
-            "channel": channel,
-            "category": "長所",
-            "check_item": f"Good Point {i+1}",
-            "comment_good": gp,
-            "hold_total_sec": hold_total_sec,
+    for i, p in enumerate(good_points):
+        items_to_process.append({
+            "category": "振り返り",
+            "item": f"良かった点 {i+1}",
+            "comment": p
         })
 
     # 3. Add Improvements
-    for i, imp in enumerate(improvements[:5]):
-        rows.append({
-            "case_id": case_id,
-            "agent": agent,
-            "interaction_date": date_str,
-            "channel": channel,
-            "category": "課題",
-            "check_item": f"Improvement {i+1}",
-            "comment_improve": imp,
-            "hold_total_sec": hold_total_sec,
+    for i, p in enumerate(improvements):
+        items_to_process.append({
+            "category": "振り返り",
+            "item": f"改善点 {i+1}",
+            "comment": p
         })
-
-    # 4. Add Overall
-    rows.append({
-        "case_id": case_id,
-        "agent": agent,
-        "interaction_date": date_str,
-        "channel": channel,
+        
+    # 4. Add Summary Row (Overall Comment)
+    items_to_process.append({
         "category": "総評",
-        "check_item": "総合コメント",
-        "comment_good": overall_comment,
-        "next_step_draft": draft,
-        "hold_total_sec": hold_total_sec,
+        "item": "全体コメント",
+        "comment": overall_comment
     })
+
+    # Convert to CSV rows with deduplication
+    for i, item in enumerate(items_to_process):
+        is_first = (i == 0)
+        row = {
+            "case_id": case_id if is_first else "",
+            "booking_id": booking_id if is_first else "",
+            "agent": agent if is_first else "",
+            "interaction_date": interaction_dt if is_first else "",
+            "tour_code": tour_code if is_first else "",
+            "hold_ratio": hold_ratio_str if is_first else "",
+            "interaction_url": interaction_url if is_first else "",
+            "category": item.get("category", ""),
+            "check_item": item.get("item", ""),
+            "rating_symbol": item.get("rank", ""),
+            "rating_num": str(SYMBOL_TO_SCORE.get(item.get("rank"), "")) if "rank" in item else "",
+            "comment": item.get("comment", ""),
+            "evidence": item.get("evidence", "")
+        }
+        rows.append(row)
 
     return rows
 
-def result_to_summary_row(result: Dict) -> Dict:
-    """
-    Creates a single summary row for an agent's evaluation.
-    """
-    case_id = result.get("case_id", "")
-    agent = result.get("agent", "")
-    channel = result.get("channel", "EMAIL")
-    eval_data = result.get("evaluation", {})
-    
-    return {
-        "Agent": agent,
-        "Channel": channel,
-        "Case ID": case_id,
-        "Overall Summary": eval_data.get("overall_comment", ""),
-        "Good Points": "; ".join(eval_data.get("good_points", [])[:3]),
-        "Improvements": "; ".join(eval_data.get("improvements", [])[:3]),
-        "Suggested Action": eval_data.get("next_step_draft", "")[:200] + "..." if eval_data.get("next_step_draft") else ""
-    }
-
 def export_phase5(results: List[Dict], call_path: str = "CHECK_LOG_CALL.csv", email_path: str = "CHECK_LOG_EMAIL.csv"):
-    """
-    Phase 5: Export results split by channel.
-    """
+    """Main export function for Phase 9."""
     call_rows = []
     email_rows = []
 
@@ -165,7 +148,6 @@ def export_phase5(results: List[Dict], call_path: str = "CHECK_LOG_CALL.csv", em
         else:
             email_rows.extend(rows)
 
-    # Save Call Logs
     if call_rows:
         with open(call_path, "w", encoding="utf-8-sig", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS, extrasaction='ignore')
@@ -173,7 +155,6 @@ def export_phase5(results: List[Dict], call_path: str = "CHECK_LOG_CALL.csv", em
             writer.writerows(call_rows)
         print(f"Call logs saved to {call_path} ({len(call_rows)} rows)")
 
-    # Save Email Logs
     if email_rows:
         with open(email_path, "w", encoding="utf-8-sig", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS, extrasaction='ignore')
@@ -183,44 +164,5 @@ def export_phase5(results: List[Dict], call_path: str = "CHECK_LOG_CALL.csv", em
 
     return call_path, email_path
 
-def export_to_excel_phase5(results: List[Dict], output_path: str = "weekly_check_sheet.xlsx"):
-    """
-    Phase 5: Generate Excel with two sheets.
-    """
-    if not results:
-        print("No results to export to Excel.")
-        return None
-
-    try:
-        import pandas as pd
-        
-        call_rows = []
-        email_rows = []
-        for res in results:
-            rows = result_to_check_rows(res)
-            if res.get("channel") == "CALL":
-                call_rows.extend(rows)
-            else:
-                email_rows.extend(rows)
-
-        if not call_rows and not email_rows:
-            print("No evaluable rows to export to Excel.")
-            return None
-
-        with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-            # 1. Summary Sheet
-            summary_rows = [result_to_summary_row(r) for r in results if r.get("status") == "evaluated"]
-            if summary_rows:
-                pd.DataFrame(summary_rows).to_excel(writer, sheet_name="SUMMARY_REPORT", index=False)
-
-            # 2. Detailed Logs
-            if call_rows:
-                pd.DataFrame(call_rows).to_excel(writer, sheet_name="CALL_LOG", index=False)
-            if email_rows:
-                pd.DataFrame(email_rows).to_excel(writer, sheet_name="EMAIL_LOG", index=False)
-        
-        print(f"Excel summary saved to {output_path}")
-        return output_path
-    except ImportError:
-        print("pandas not installed. Skipping Excel generation.")
-        return None
+def export_to_excel_phase5(results, path):
+    pass

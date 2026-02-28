@@ -7,39 +7,33 @@ import google.generativeai as genai
 from openai import OpenAI
 from src.case_linking import Case
 
-# === Phase 5: Channel-specific Masters ===
-MASTER_ITEMS_CALL = {
-    "基本応対": ["敬語", "礼儀", "声", "滑舌", "クッション言葉", "問合い対応"],
-    "ヒアリング姿勢": ["ヒアリング", "傾聴", "状況質問"],
-    "SPIN話法": ["問題質問", "示唆質問", "解決質問"]
-}
-
-MASTER_ITEMS_EMAIL = {
-    "基本応対": ["敬語", "礼儀", "文章構成", "視覚的工夫", "クッション言葉", "問合い対応"],
-    "ヒアリング姿勢": ["ヒアリング", "傾聴", "状況質問"],
-    "SPIN話法": ["問題質問", "示唆質問", "解決質問"]
-}
-
-# === Symbol Mapping (Phase 5) ===
-# 1=×, 2=△, 3=〇, 4=◎
-SYMBOL_TO_SCORE = {"×": 1, "△": 2, "〇": 3, "◎": 4, "○": 3} # ○ is allowed as alias for 〇
+# === Symbol Mapping ===
+SYMBOL_TO_SCORE = {"×": 1, "△": 2, "〇": 3, "◎": 4, "○": 3}
 SCORE_TO_SYMBOL = {1: "×", 2: "△", 3: "〇", 4: "◎"}
 
 class LLMClient:
-    def generate(self, prompt: str) -> str:
+    def generate(self, prompt: str, files: Optional[List] = None) -> str:
         raise NotImplementedError
 
 class GeminiLLMClient(LLMClient):
     def __init__(self, api_key: str):
         genai.configure(api_key=api_key)
-        model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-flash")
+        model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-flash-latest")
         self.model = genai.GenerativeModel(model_name)
 
-    def generate(self, prompt: str) -> str:
+    def generate(self, prompt: str, files: Optional[List] = None) -> str:
         try:
-            response = self.model.generate_content(prompt)
+            inputs = []
+            if files:
+                inputs.extend(files)
+            inputs.append(prompt)
+            response = self.model.generate_content(inputs)
+            if not response.parts:
+                print(f"[DEBUG] Empty response parts. Prompt feedback: {response.prompt_feedback}")
+                return json.dumps({"error": "Empty response", "feedback": str(response.prompt_feedback)})
             return response.text
         except Exception as e:
+            print(f"[ERROR] Gemini generation failed: {e}")
             return json.dumps({"error": str(e)})
 
 class Evaluator:
@@ -47,73 +41,52 @@ class Evaluator:
         self.llm = llm_client
 
     def evaluate_case(self, case: Case) -> Dict:
-        """Evaluate a single case (Phase 5: Channel-specific)."""
+        has_phone = any(i.type == "PHONE" for i in case.interactions)
+        channel = "CALL" if has_phone else "EMAIL"
+        target_type = "PHONE" if channel == "CALL" else "EMAIL"
+        filtered_interactions = [i for i in case.interactions if i.type == target_type]
         
-        # Identify channel (prefer CALL if present)
-        channel = "EMAIL"
-        if any(i.type == "PHONE" for i in case.interactions):
-            channel = "CALL"
-        
-        master = MASTER_ITEMS_CALL if channel == "CALL" else MASTER_ITEMS_EMAIL
-        
-        # Build conversation text
+        if not filtered_interactions:
+            return {
+                "case_id": case.case_id,
+                "agent": case.agent,
+                "channel": channel,
+                "status": "skipped",
+                "reason": f"No {target_type} interactions found."
+            }
+
         conversation_text = ""
-        for i in case.interactions:
+        audio_files = []
+        for i in filtered_interactions:
             content = i.body if i.body else "(No content)"
-            conversation_text += (
-                f"\n[{i.type}] {i.timestamp}\n"
-                f"Subject: {i.subject}\n"
-                f"Content: {content}\n---\n"
-            )
+            conversation_text += f"\n[{i.type}] {i.timestamp}\nSubject: {i.subject}\nContent: {content}\n---\n"
+            if i.type == "PHONE" and i.file_path and os.path.exists(i.file_path):
+                try:
+                    audio_file = genai.upload_file(path=i.file_path)
+                    import time
+                    while audio_file.state.name == "PROCESSING":
+                        time.sleep(1)
+                        audio_file = genai.get_file(audio_file.name)
+                    audio_files.append(audio_file)
+                except Exception as e:
+                    print(f"[WARNING] Audio upload failed: {e}")
 
-        # Build schema string for JSON instructions
-        schema_parts = []
-        for cat, items in master.items():
-            item_schema = ", ".join([f'"{item}": {{ "rank": "×|△|〇|◎", "comment": "str" }}' for item in items])
-            schema_parts.append(f'"{cat}": {{ {item_schema} }}')
-        scorecard_schema = ", ".join(schema_parts)
-
-        prompt = f"""あなたは「トラベルスタンダードジャパン」の品質管理責任者として、エージェントの{channel}応対を評価してください。
-
-**評価対象コンテキスト:**
-{conversation_text}
-
-**評価ルール:**
-1. **チャネル特性の考慮**: {channel}特有のポイント（電話なら声のトーン、メールなら視覚的構成など）を重点的に。
-2. **スコア記号の厳守**: 以下の4段階のみを使用してください。
-   - ◎ (4点): 完璧。他者の模範となる。
-   - 〇 (3点): 基本ができている。問題なし。
-   - △ (2点): やや課題あり。改善の余地。
-   - × (1点): 重大な課題。至急の教育が必要。
-3. **1行コメント**: 各項目20〜40文字程度の具体的なフィードバック。
-4. **構造化出力**: 箇条書きと簡潔な総評。
-
-**出力JSONフォーマット:**
-{{
-    "scorecard": {{
-        {scorecard_schema}
-    }},
-    "overall_comment": "最大3行の総評",
-    "good_points": ["点目1", "点目2", "..."],
-    "improvements": ["改善1", "改善2", "..."],
-    "next_step_draft": "返信ドラフト全文",
-    "ai_metrics": {{
-        "spin_tags": {{ "situation": int, "problem": int, "implication": int, "need_payoff": int }},
-        "risk_flags": ["リスク内容"]
-    }}
-}}
-
-**重要:** JSON以外のテキストは決して含めないでください。
-"""
-
-        response_text = self.llm.generate(prompt)
-        cleaned = response_text.replace("```json", "").replace("```", "").strip()
-
-        try:
-            result = json.loads(cleaned)
-        except Exception as e:
-            print(f"[ERROR] JSON parse failed: {e}")
-            result = {"error": str(e), "raw": response_text[:200]}
+        prompt = self._build_prompt(channel, conversation_text, has_audio=len(audio_files) > 0)
+        
+        result = {}
+        for attempt in range(2):
+            response_text = self.llm.generate(prompt, files=audio_files if audio_files else None)
+            cleaned = response_text.replace("```json", "").replace("```", "").strip()
+            try:
+                result = json.loads(cleaned)
+                if "scorecard" in result:
+                    break
+            except Exception as e:
+                print(f"[DEBUG] JSON parse failed (Attempt {attempt+1}): {e}")
+                if attempt == 0:
+                    prompt += "\nOutput ONLY valid JSON."
+                else:
+                    result = {"error": "JSON parse failed", "raw": response_text[:500]}
 
         return {
             "case_id": case.case_id,
@@ -122,6 +95,84 @@ class Evaluator:
             "status": "evaluated",
             "evaluation": result,
         }
+
+    def _build_prompt(self, channel: str, conversation_text: str, has_audio: bool) -> str:
+        audio_instruction = ""
+        items_json = ""
+        
+        if channel == "CALL":
+            if has_audio:
+                audio_instruction = "- **音声評価 (AUDIO)**: トーン（声の調子）、滑舌（明瞭性）、話速（テンポ）、沈黙（間）、遮り（被せ）を直接の「音」から評価してください。"
+            else:
+                audio_instruction = "- **音声評価 (AUDIO)**: 音声なし。声、滑舌、話速、沈黙、遮りの項目はすべて rank: NA、evidence: 音声なし としてください。"
+            
+            items_json = """
+        "基本応対": {
+            "敬語": { "rank": "◎|〇|△|×|NA", "comment": "30字", "evidence": "[00:10] 「～」" },
+            "礼儀": { "rank": "...", "comment": "...", "evidence": "..." },
+            "声": { "rank": "...", "comment": "...", "evidence": "..." },
+            "滑舌": { "rank": "...", "comment": "...", "evidence": "..." },
+            "クッション言葉": { "rank": "...", "comment": "...", "evidence": "..." },
+            "問合い対応": { "rank": "...", "comment": "...", "evidence": "..." }
+        },
+        "ヒアリング・傾聴": {
+            "ヒアリング": { "rank": "...", "comment": "...", "evidence": "..." },
+            "傾聴": { "rank": "...", "comment": "...", "evidence": "..." }
+        },
+        "SPIN話法": {
+            "状況質問": { "rank": "...", "comment": "...", "evidence": "..." },
+            "問題質問": { "rank": "...", "comment": "...", "evidence": "..." },
+            "示唆質問": { "rank": "...", "comment": "...", "evidence": "..." },
+            "解決質問": { "rank": "...", "comment": "...", "evidence": "..." }
+        }"""
+        else:
+            # EMAIL items based on user's image request
+            items_json = """
+        "基本応対": {
+            "敬語": { "rank": "◎|〇|△|×|NA", "comment": "30字", "evidence": "本文引用" },
+            "礼儀": { "rank": "...", "comment": "...", "evidence": "..." },
+            "文章構成": { "rank": "...", "comment": "...", "evidence": "..." },
+            "視覚的工夫": { "rank": "...", "comment": "...", "evidence": "..." },
+            "クッション言葉": { "rank": "...", "comment": "...", "evidence": "..." },
+            "問合い対応": { "rank": "...", "comment": "...", "evidence": "..." }
+        },
+        "ヒアリング": {
+            "ヒアリング": { "rank": "...", "comment": "...", "evidence": "..." },
+            "傾聴": { "rank": "...", "comment": "...", "evidence": "..." },
+            "状況質問": { "rank": "...", "comment": "...", "evidence": "..." }
+        },
+        "SPIN話法": {
+            "問題質問": { "rank": "...", "comment": "...", "evidence": "..." },
+            "示唆質問": { "rank": "...", "comment": "...", "evidence": "..." },
+            "解決質問": { "rank": "...", "comment": "...", "evidence": "..." }
+        }"""
+
+        return f"""あなたは「トラベルスタンダードジャパン」の品質責任者として、{channel}応対を厳格に評価してください。
+
+**評価対象ログ:**
+{conversation_text}
+
+**最重要ルール:**
+1. **予約番号 (booking_id)**: ログ内に「予約番号」「RESERVATION」等（例：12345）があれば抽出してください。なければ空文字。
+2. **ツアーコード (tour_code)**: ログ内に「TI-12345」のようなツアーコードがあれば抽出してください。
+3. **日時特定**: 評価対象となった応対の正確な日時（年-月-日 時:分:秒）を特定してください。
+4. **根拠引用 (evidence)**: 全項目で具体的な発言を引用してください。電話の場合は [01:23] のようなタイムスタンプを必ず含めてください。
+5. **良かった点 (3〜5件) / 改善点 (1〜3件)**: それぞれ具体的に抽出してください。無理に最大件数まで埋める必要はありませんが、最低件数は満たすようにしてください。
+
+**出力形式 (JSONのみ、他のテキスト一切禁止):**
+{{
+    "booking_id": "12345",
+    "tour_code": "TI-XXXXX",
+    "interaction_datetime": "YYYY-MM-DD HH:MM:SS",
+    "scorecard": {{{items_json}
+    }},
+    "良かった点": ["1...", "2...", "3...", "4...", "5..."],
+    "改善点": ["1...", "2...", "3..."],
+    "overall_comment": "...",
+    "ai_metrics": {{ "spin_applied": bool, "risk_level": "Low|Medium|High" }}
+}}
+{audio_instruction}
+"""
 
     def evaluate_batch(self, cases: List[Case]) -> List[Dict]:
         return [self.evaluate_case(c) for c in cases]

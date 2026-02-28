@@ -23,7 +23,10 @@ class Reporter:
     ) -> str:
         report = f"# 週次評価レポート ({self.mode.upper()} MODE) - {datetime.now().strftime('%Y-%m-%d')}\n\n"
         report += f"## 対象期間: {start_date} ～ {end_date}\n\n"
-
+        
+        eval_count = len([r for r in final_results if r.get("status") == "evaluated"])
+        report += f"> **ステータス**: 評価済み: {eval_count}件 | 対象期間内全データ: {len(final_results)}件\n\n"
+        
         # Group by Agent
         results_by_agent = {}
         for res in final_results:
@@ -31,13 +34,9 @@ class Reporter:
             if agent not in results_by_agent:
                 results_by_agent[agent] = {"CALL": None, "EMAIL": None}
             
-            if res.get("status") == "evaluated":
-                channel = res.get("channel")
-                results_by_agent[agent][channel] = res
-            elif res.get("status") == "skipped":
-                # Keep track of skipped for reason display
-                channel = res.get("channel")
-                results_by_agent[agent][channel] = res
+            # Use evaluated if available, else keep the skipped record
+            if res.get("status") == "evaluated" or results_by_agent[agent][res.get("channel")] is None:
+                results_by_agent[agent][res.get("channel")] = res
 
         for agent, bundles in sorted(results_by_agent.items()):
             report += f"## エージェント: {agent}\n\n"
@@ -67,50 +66,56 @@ class Reporter:
     def _format_case_section(self, res: Dict) -> str:
         eval_data = res.get("evaluation", {})
         case_id = res.get("case_id", "Unknown Case")
+        tour_code = eval_data.get("tour_code", "N/A")
         hold_time = res.get("hold_total_sec", 0)
-        hold_segments = res.get("hold_segments", [])
+        total_time = res.get("total_duration_sec", 0)
+        hold_ratio = (hold_time / total_time * 100) if total_time > 0 else 0
+        
         fallback = res.get("fallback", "strict")
         
         section = f"**ケースID**: {case_id} ({fallback})\n"
+        section += f"**ツアーコード**: {tour_code}\n"
         
         if res.get("channel") == "CALL":
-            section += f"**保留時間**: 合計 {hold_time}秒"
-            if hold_segments:
-                seg_detail = ", ".join([f"{s['start']}s-{s['end']}s({s['duration']}s)" for s in hold_segments])
-                section += f" [内訳: {seg_detail}]"
-            section += "\n"
+            section += f"**保留時間**: 合計 {hold_time:.1f}秒 (通話時間の {hold_ratio:.1f}%)\n"
         
         section += "\n"
         
-        # Scorecard (Only in Score Mode)
-        if self.mode == "score":
-            scorecard = eval_data.get("scorecard", {})
-            if scorecard:
-                section += "| カテゴリ | 項目 | 評価 | 1行フィードバック |\n"
-                section += "|---|---|:---:|---|\n"
-                for cat, items in scorecard.items():
-                    for item, data in items.items():
-                        section += f"| {cat} | {item} | {data.get('rank')} | {data.get('comment')} |\n"
-                section += "\n"
+        # Scorecard
+        scorecard = eval_data.get("scorecard", {})
+        if scorecard:
+            section += "| カテゴリ | 項目 | 評価 | 根拠(evidence) | フィードバック |\n"
+            section += "|---|---|:---:|---|---|\n"
+            for cat, items in scorecard.items():
+                for item, data in items.items():
+                    rank = data.get("rank", "N/A")
+                    evidence = data.get("evidence", "-")
+                    comment = data.get("comment", "-")
+                    section += f"| {cat} | {item} | {rank} | {evidence} | {comment} |\n"
+            section += "\n"
 
         section += f"**■ 総評**\n{eval_data.get('overall_comment', 'N/A')}\n\n"
 
-        gp = eval_data.get("good_points", [])
-        if gp:
-            section += "**👍 Good Points**\n"
-            for p in gp[:5]:
+        # Points
+        good_points = eval_data.get("良かった点", [])
+        if good_points:
+            section += "**📌 良かった点**\n"
+            for p in good_points:
                 section += f"- {p}\n"
             section += "\n"
 
-        imp = eval_data.get("improvements", [])
-        if imp:
-            section += "**💡 Improvements**\n"
-            for p in imp[:5]:
+        improvements = eval_data.get("改善点", [])
+        if improvements:
+            section += "**💡 改善点**\n"
+            for p in improvements:
                 section += f"- {p}\n"
             section += "\n"
 
-        draft = eval_data.get("next_step_draft")
-        if draft:
-            section += f"**📩 推奨アクション（返信案）**\n```text\n{draft}\n```\n\n"
+        # AI Metrics
+        metrics = eval_data.get("ai_metrics", {})
+        if metrics:
+            spin = "あり" if metrics.get("spin_applied") else "なし"
+            risk = metrics.get("risk_level", "Unknown")
+            section += f"> **AI指標**: SPIN適用: {spin} | リスクレベル: {risk}\n\n"
 
         return section

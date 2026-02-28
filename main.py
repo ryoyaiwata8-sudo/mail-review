@@ -2,7 +2,8 @@
 import os
 from datetime import datetime, date
 from dotenv import load_dotenv
-from src.data_ingestion import DataIngestion
+import pandas as pd
+from src.data_ingestion import DataIngestion, Interaction
 from src.case_linking import CaseLinker
 from src.sampler import Sampler
 from src.evaluator import Evaluator, GeminiLLMClient
@@ -50,11 +51,43 @@ def main():
     ingestion = DataIngestion(data_dir)
     interactions = ingestion.load_all()
     
+    # Load specific file requested by user
+    extra_file = r"C:\Users\ryoya\Documents\intern\vexum\トラベルスタンダード\電話・対応\質問_9JUN_3PM.xlsx"
+    if os.path.exists(extra_file):
+        print(f"Loading extra file: {extra_file}")
+        try:
+            extra_df = pd.read_excel(extra_file)
+            for _, row in extra_df.iterrows():
+                # Simple conversion to Interaction
+                i = Interaction(
+                    id=f"EXTRA_{row.get('メール番号', hash(str(row)))}",
+                    type="EMAIL",
+                    timestamp=row.get('日時', datetime.now()),
+                    agent=ingestion.normalize_agent(row.get('担当者', '')),
+                    subject=str(row.get('件名', '')),
+                    body=str(row.get('本文', '')),
+                    file_path=extra_file,
+                    raw_data=row.to_dict()
+                )
+                interactions.append(i)
+        except Exception as e:
+            print(f"Failed to load extra file: {e}")
+
     linker = CaseLinker()
     cases = linker.link_cases(interactions)
-    print(f"Total Cases Found: {len(cases)}")
+    
+    # === Agent Filtering ===
+    target_agents = ["小杉勇太", "湯本", "内藤結衣", "小杉", "内藤", "湯元"]
+    cases = [c for c in cases if any(a in c.agent for a in target_agents)]
+    print(f"Total Cases Found for target agents: {len(cases)}")
 
-    # === Step 2: Sampling Readiness (Pre-transcription for Gating) ===
+    # === Step 2: Sampling Readiness ===
+    # Relax period for this specific run if the file is from June
+    if "9JUN" in extra_file:
+        start_date = date(2025, 6, 1)
+        end_date = date(2025, 6, 30)
+        print(f"Adjusted Target Period for extra file data: {start_date} ~ {end_date}")
+
     sampler = Sampler()
     in_range_cases, _ = sampler.split_by_period(cases, start_date, end_date)
     
@@ -64,7 +97,6 @@ def main():
             for interaction in case.interactions:
                 if interaction.type == "PHONE" and interaction.file_path and not interaction.body:
                     print(f"  Gating check transcript: {os.path.basename(interaction.file_path)}...")
-                    # For gating, we just need text.
                     interaction.body = audio_processor.transcribe(interaction.file_path)
 
     # === Step 3: Phase 6 Selection (EMAILx1 + CALLx1) ===
@@ -89,6 +121,7 @@ def main():
                 
                 hold_sec = 0
                 hold_segments = []
+                info = {}
                 # If Call, get Hold Time
                 if channel == "CALL" and audio_processor:
                     for interaction in case.interactions:
@@ -102,6 +135,7 @@ def main():
                 # Evaluate
                 result = evaluator.evaluate_case(case)
                 result["hold_total_sec"] = hold_sec
+                result["total_duration_sec"] = info.get("total_duration_sec", 0) if channel == "CALL" else 0
                 result["hold_segments"] = hold_segments
                 result["fallback"] = entry["fallback"] or "strict"
                 final_results.append(result)
@@ -115,30 +149,39 @@ def main():
                     "reason": entry["reason"]
                 })
 
-    # === Step 5: Final Export ===
-    print("\nExporting Phase 6 results...")
+    # === Final Export ===
+    import json
+    import time
+    print("\nExporting results...")
+    
+    # Backup results to JSON
+    with open("last_evaluation_results.json", "w", encoding="utf-8") as f:
+        json.dump(final_results, f, indent=2, ensure_ascii=False)
+    
     eval_only = [r for r in final_results if r["status"] == "evaluated"]
     if eval_only:
-        export_phase5(eval_only)
-        export_to_excel_phase5(eval_only, "weekly_check_sheet.xlsx")
-
-    # Generate Markdown Reports (Dual output: Score and Coach)
-    reporter_score = Reporter(mode="score")
-    report_score = reporter_score.generate_report(final_results, start_date, end_date)
-    with open("score_report.md", "w", encoding="utf-8") as f:
-        f.write(report_score)
-
-    reporter_coach = Reporter(mode="coach")
-    report_coach = reporter_coach.generate_report(final_results, start_date, end_date)
-    with open("coach_report.md", "w", encoding="utf-8") as f:
-        f.write(report_coach)
-    
-    # Also keep weekly_report.md as a default (Score mode)
-    with open("weekly_report.md", "w", encoding="utf-8") as f:
-        f.write(report_score)
-    
-    print("Phase 6 complete. Reports generated: score_report.md, coach_report.md, and weekly_report.md.")
+        try:
+            export_phase5(eval_only, call_path="CHECK_LOG_CALL.csv", email_path="CHECK_LOG_EMAIL.csv")
+            print("Export complete: CHECK_LOG_CALL.csv, CHECK_LOG_EMAIL.csv")
+        except PermissionError:
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            alt_call = f"CHECK_LOG_CALL_{ts}.csv"
+            alt_email = f"CHECK_LOG_EMAIL_{ts}.csv"
+            print(f"Warning: Primary files locked. Saving to {alt_call} and {alt_email}")
+            export_phase5(eval_only, call_path=alt_call, email_path=alt_email)
+        except Exception as e:
+            print(f"Export failed: {e}")
+            import traceback
+            traceback.print_exc()
+    else:
+        print("No cases were evaluated. No CSV generated.")
 
 
 if __name__ == "__main__":
-    main()
+    import traceback
+    try:
+        main()
+    except Exception as e:
+        print("\n--- ERROR TRACEBACK ---")
+        traceback.print_exc()
+        print("-----------------------")

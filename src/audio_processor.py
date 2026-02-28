@@ -46,7 +46,10 @@ class AudioProcessor:
         json_cache = file_path + ".json"
         if os.path.exists(json_cache):
             with open(json_cache, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+                if "total_duration_sec" in data and data["total_duration_sec"] > 0:
+                    return data
+                print(f"[DEBUG] Cache exists but missing total_duration_sec. Re-processing {file_path}")
 
         if self.provider == "gemini":
             res = self._process_gemini(file_path)
@@ -71,16 +74,16 @@ class AudioProcessor:
         if audio_file.state.name == "FAILED":
             raise ValueError("Gemini file upload failed.")
             
-        # Request timestamped transcription
+        # Request timestamped transcription and duration
         prompt = """
         transcribe with timestamps and calculate hold time.
         1. Transcribe the audio precisely.
         2. Detect "Hold" segments (start, end, duration).
-           A "Hold" is usually preceded by words like "少々お待ちください", "確認します", "保留にします" etc.
-           The hold ends when someone starts talking again.
-        3. Output MUST be valid JSON:
+        3. Determine the total duration of the audio file in seconds.
+        4. Output MUST be valid JSON:
         {
           "text": "Full transcript here...",
+          "total_duration_sec": 300.5,
           "hold_total_sec": 120,
           "hold_segments": [
             {"start": 10.5, "end": 70.5, "duration": 60, "trigger": "少々お待ちください"}
@@ -96,7 +99,7 @@ class AudioProcessor:
             return data
         except:
             # Fallback if AI fails JSON
-            return {"text": response.text, "hold_total_sec": 0, "hold_segments": []}
+            return {"text": response.text, "total_duration_sec": 0, "hold_total_sec": 0, "hold_segments": []}
 
     def _transcribe_openai(self, file_path: str) -> str:
         with open(file_path, "rb") as audio_file:
